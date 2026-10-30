@@ -14,7 +14,7 @@ import concurrent.futures
 import numpy as np
 import xarray as xr
 import cv2
-from herbie import Herbie
+import requests
 import rioxarray
 from rasterio.enums import Resampling
 import boto3
@@ -23,32 +23,26 @@ import gzip
 import struct
 
 os.environ["GDAL_NUM_THREADS"] = "ALL_CPUS"
-os.environ.setdefault("TQDM_DISABLE", "1")   # silence download progress bars (best effort)
-sys.stdout.reconfigure(line_buffering=True)  # so log timestamps match reality
+os.environ.setdefault("TQDM_DISABLE", "1")
+sys.stdout.reconfigure(line_buffering=True)
 
 # GFS 0.25 degree is 3-hourly out to 240 hours.
 FORECAST_STEPS = list(range(0, 241, 3))
 
 MAX_TEXTURE_SIZE = 4096
-
 MAX_CONCURRENT_WORKERS = int(os.environ.get("MAX_WORKERS", "12"))
-
 GZIP_LEVEL = 6
 GZIP_THREADS = 4
-
 MAX_CONCURRENT_PARAMS = 2
 
 CONFIG_FILE_PATH = os.path.join("config", "parametersGFS.json")
-
-CONTOUR_COORD_SCALE = 1000          # stored as integer thousandths of a degree
+CONTOUR_COORD_SCALE = 1000
 CONTOUR_FORMAT = "CTV2"
 INT16_MAX = 32767
-
 CLIMATOLOGY_CACHE = {}
 
 TIMINGS = {}
 _T_LOCK = threading.Lock()
-
 
 @contextlib.contextmanager
 def tm(key):
@@ -323,8 +317,13 @@ def get_climatology_grid(param_id, target_date=None, target_shape=(721, 1440), u
 
 @timed("decode_all")
 def process_thickness_grib(grib_path, contour_config):
-    # Use filter_by_keys to avoid stepType conflicts if they exist
-    ds = xr.open_dataset(grib_path, engine="cfgrib", backend_kwargs={'errors': 'ignore', 'filter_by_keys': {'stepType': 'instant'}})
+    try:
+        ds = xr.open_dataset(grib_path, engine="cfgrib", backend_kwargs={'errors': 'ignore', 'filter_by_keys': {'stepType': 'instant'}})
+    except ValueError:
+        ds = xr.open_dataset(grib_path, engine="cfgrib", backend_kwargs={'errors': 'ignore'})
+
+    if not ds.data_vars:
+         raise ValueError("Empty GRIB dataset for thickness")
 
     if 'lon' in ds.coords:
         ds = ds.rename({'lon': 'longitude'})
@@ -362,7 +361,6 @@ def process_thickness_grib(grib_path, contour_config):
 
 @timed("decode_all")
 def process_grib_to_array(grib_path, param_config, want_raster=True, target_date=None, want_raw=False):
-    # Determine the appropriate stepType filter based on the parameter
     param_id = param_config.get("id", "").lower()
     grib_var = str(param_config.get("grib_param", "")).lower()
 
@@ -372,11 +370,16 @@ def process_grib_to_array(grib_path, param_config, want_raster=True, target_date
     elif grib_var in ["tp", "weasd", "apcp"] or param_id in ["tp", "tp_6h", "tp_24h", "asnow", "asnow_6h", "asnow_24h"]:
         filter_keys['stepType'] = 'accum'
 
-    kwargs = {'errors': 'ignore'}
-    if filter_keys:
-        kwargs['filter_by_keys'] = filter_keys
+    try:
+        ds = xr.open_dataset(grib_path, engine="cfgrib", backend_kwargs={'errors': 'ignore'})
+    except ValueError as e:
+        if "multiple values for unique key" in str(e) and filter_keys:
+            ds = xr.open_dataset(grib_path, engine="cfgrib", backend_kwargs={'errors': 'ignore', 'filter_by_keys': filter_keys})
+        else:
+            raise e
 
-    ds = xr.open_dataset(grib_path, engine="cfgrib", backend_kwargs=kwargs)
+    if not ds.data_vars:
+        raise ValueError("Empty GRIB dataset")
 
     if 'lon' in ds.coords:
         ds = ds.rename({'lon': 'longitude'})
@@ -429,7 +432,7 @@ def process_grib_to_array(grib_path, param_config, want_raster=True, target_date
     arr_8bit = normalize_array(raw_arr_k, param_config) if want_raster else None
     return arr_8bit, contour_levels
 
-def _get_herbie_search(param, levtype, levelist=None):
+def _get_gfs_search(param, levtype, levelist=None):
     p = param.lower()
     if levtype == "pl":
         name_map = {"t": "TMP", "u": "UGRD", "v": "VGRD", "gh": "HGT", "z": "HGT", "relv": "RELV"}
@@ -452,6 +455,43 @@ def _get_herbie_search(param, levtype, levelist=None):
         name = name_map.get(p, p.upper())
         return f":{name}:"
 
+def download_gfs_variable(url_base, search_str, out_file, session):
+    """Downloads a specific byte range from an S3 object using the .idx file."""
+    idx_url = f"{url_base}.idx"
+    
+    # Get the .idx file
+    r_idx = session.get(idx_url, timeout=10)
+    if r_idx.status_code != 200:
+        return False
+    
+    lines = r_idx.text.strip().split('\n')
+    
+    start_byte = None
+    end_byte = None
+    
+    for i, line in enumerate(lines):
+        if search_str in line:
+            start_byte = int(line.split(':')[1])
+            # The end byte is the start byte of the next line, minus 1
+            if i + 1 < len(lines):
+                end_byte = int(lines[i+1].split(':')[1]) - 1
+            else:
+                end_byte = '' # Download to the end
+            break
+            
+    if start_byte is None:
+        return False # Variable not found in this GRIB file
+
+    # Download the specific byte range
+    headers = {'Range': f'bytes={start_byte}-{end_byte}'}
+    r_grib = session.get(url_base, headers=headers, timeout=20)
+    
+    if r_grib.status_code in (200, 206):
+        with open(out_file, 'ab') as f:
+            f.write(r_grib.content)
+        return True
+    return False
+
 def fetch_and_process_step(target_date, chosen_run, step, param_config, model_name):
     patterns = param_config["filename_patterns"]
     grib_file = patterns["grib"].format(model=model_name, param=param_config["id"], step=step)
@@ -460,26 +500,27 @@ def fetch_and_process_step(target_date, chosen_run, step, param_config, model_na
     levtype = param_config.get("levtype", "sfc")
     levelist = param_config.get("levelist")
 
-    try:
-        H = Herbie(f"{target_date} {str(chosen_run).zfill(2)}:00", model="gfs", product="pgrb2.0p25", fxx=step)
-        
-        if isinstance(grib_p, list):
-            search_strs = [_get_herbie_search(p, levtype, levelist) for p in grib_p]
-        else:
-            search_strs = [_get_herbie_search(grib_p, levtype, levelist)]
+    url_base = f"https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.{target_date}/{str(chosen_run).zfill(2)}/atmos/gfs.t{str(chosen_run).zfill(2)}z.pgrb2.0p25.f{step:03d}"
 
-        with tm("download"):
-            found_any = False
-            with open(grib_file, 'wb') as f_out:
+    try:
+        with requests.Session() as session:
+            if isinstance(grib_p, list):
+                search_strs = [_get_gfs_search(p, levtype, levelist) for p in grib_p]
+            else:
+                search_strs = [_get_gfs_search(grib_p, levtype, levelist)]
+
+            # Clear file if it exists from a previous partial run
+            if os.path.exists(grib_file):
+                os.remove(grib_file)
+
+            with tm("download"):
+                found_any = False
                 for s in search_strs:
-                    downloaded_path = H.download(s)
-                    if downloaded_path and downloaded_path.exists():
-                        with open(downloaded_path, 'rb') as f_in:
-                            f_out.write(f_in.read())
+                    if download_gfs_variable(url_base, s, grib_file, session):
                         found_any = True
-            
-            if not found_any:
-                raise Exception("No GRIB data found by Herbie for this step.")
+                
+                if not found_any:
+                    raise Exception("No GRIB data found on AWS for this step.")
 
         if os.path.exists(grib_file) and os.path.getsize(grib_file) > 0:
             contour_sources = param_config.get("contour_sources")
@@ -502,26 +543,30 @@ def fetch_and_process_step(target_date, chosen_run, step, param_config, model_na
                 ptype_gribs = ptype_source.get("grib_params", [])
                 ptype_files = {}
                 try:
-                    with tm("download_ptype"):
+                    with tm("download_ptype"), requests.Session() as session:
                         for p in ptype_gribs:
                             ptype_file = f"{model_name}_{param_config['id']}_ptype_{p}_{step:03d}.grib2"
-                            p_path = H.download(_get_herbie_search(p, "sfc"))
-                            if p_path and p_path.exists():
-                                shutil.copyfile(p_path, ptype_file)
+                            if os.path.exists(ptype_file):
+                                os.remove(ptype_file)
+                            if download_gfs_variable(url_base, _get_gfs_search(p, "sfc"), ptype_file, session):
                                 ptype_files[p] = ptype_file
 
                     def read_ptype(fpath):
                         if not os.path.exists(fpath) or os.path.getsize(fpath) == 0: return None
-                        ds = xr.open_dataset(fpath, engine="cfgrib", backend_kwargs={'errors': 'ignore'})
-                        if 'lon' in ds.coords: ds = ds.rename({'lon': 'longitude'})
-                        if 'lat' in ds.coords: ds = ds.rename({'lat': 'latitude'})
-                        ds = ds.sortby('latitude', ascending=False)
-                        if ds.longitude.max() > 180:
-                            ds = ds.assign_coords(longitude=(((ds.longitude + 180) % 360) - 180)).sortby('longitude')
-                        var = list(ds.data_vars)[0]
-                        arr = np.squeeze(ds[var].values)
-                        ds.close()
-                        return arr
+                        try:
+                            ds = xr.open_dataset(fpath, engine="cfgrib", backend_kwargs={'errors': 'ignore'})
+                            if not ds.data_vars: return None
+                            if 'lon' in ds.coords: ds = ds.rename({'lon': 'longitude'})
+                            if 'lat' in ds.coords: ds = ds.rename({'lat': 'latitude'})
+                            ds = ds.sortby('latitude', ascending=False)
+                            if ds.longitude.max() > 180:
+                                ds = ds.assign_coords(longitude=(((ds.longitude + 180) % 360) - 180)).sortby('longitude')
+                            var = list(ds.data_vars)[0]
+                            arr = np.squeeze(ds[var].values)
+                            ds.close()
+                            return arr
+                        except Exception:
+                            return None
 
                     crain = read_ptype(ptype_files.get('crain'))
                     csnow = read_ptype(ptype_files.get('csnow'))
@@ -558,21 +603,20 @@ def fetch_and_process_step(target_date, chosen_run, step, param_config, model_na
                         step=step
                     )
                     
-                    c_search = _get_herbie_search(c_src["grib_param"], c_src.get("levtype", "sfc"), c_src.get("levelist"))
+                    c_search = _get_gfs_search(c_src["grib_param"], c_src.get("levtype", "sfc"), c_src.get("levelist"))
                     try:
-                        with tm("download_contour"):
-                            c_path = H.download(c_search)
-                            if c_path and c_path.exists():
-                                shutil.copyfile(c_path, c_grib_file)
-                        if os.path.exists(c_grib_file) and os.path.getsize(c_grib_file) > 0:
-                            if c_src.get("type") == "thickness":
-                                levels = process_thickness_grib(c_grib_file, c_src)
-                            else:
-                                c_cfg = {**param_config, **c_src}
-                                _, levels = process_grib_to_array(
-                                    c_grib_file, c_cfg, want_raster=False, target_date=target_date
-                                )
-                            contour_levels.extend(levels)
+                        with tm("download_contour"), requests.Session() as session:
+                            if os.path.exists(c_grib_file):
+                                os.remove(c_grib_file)
+                            if download_gfs_variable(url_base, c_search, c_grib_file, session):
+                                if c_src.get("type") == "thickness":
+                                    levels = process_thickness_grib(c_grib_file, c_src)
+                                else:
+                                    c_cfg = {**param_config, **c_src}
+                                    _, levels = process_grib_to_array(
+                                        c_grib_file, c_cfg, want_raster=False, target_date=target_date
+                                    )
+                                contour_levels.extend(levels)
                     except Exception as e:
                         print(f"  ❌ [{param_config['id']}] Contour error ({c_id}) F{step:03d}: {e}")
                     finally:
