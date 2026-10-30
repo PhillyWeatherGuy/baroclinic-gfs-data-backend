@@ -323,7 +323,8 @@ def get_climatology_grid(param_id, target_date=None, target_shape=(721, 1440), u
 
 @timed("decode_all")
 def process_thickness_grib(grib_path, contour_config):
-    ds = xr.open_dataset(grib_path, engine="cfgrib", backend_kwargs={'errors': 'ignore'})
+    # Use filter_by_keys to avoid stepType conflicts if they exist
+    ds = xr.open_dataset(grib_path, engine="cfgrib", backend_kwargs={'errors': 'ignore', 'filter_by_keys': {'stepType': 'instant'}})
 
     if 'lon' in ds.coords:
         ds = ds.rename({'lon': 'longitude'})
@@ -348,7 +349,6 @@ def process_thickness_grib(grib_path, contour_config):
 
     ds.close()
 
-    # GFS HGT is already in meters, ECMWF Z is m^2/s^2
     if target_var == "gh":
         thickness_dam = (z500 - z1000) / 10.0
     else:
@@ -362,7 +362,21 @@ def process_thickness_grib(grib_path, contour_config):
 
 @timed("decode_all")
 def process_grib_to_array(grib_path, param_config, want_raster=True, target_date=None, want_raw=False):
-    ds = xr.open_dataset(grib_path, engine="cfgrib", backend_kwargs={'errors': 'ignore'})
+    # Determine the appropriate stepType filter based on the parameter
+    param_id = param_config.get("id", "").lower()
+    grib_var = str(param_config.get("grib_param", "")).lower()
+
+    filter_keys = {}
+    if param_id == "prate" or grib_var == "prate":
+        filter_keys['stepType'] = 'avg'
+    elif grib_var in ["tp", "weasd", "apcp"] or param_id in ["tp", "tp_6h", "tp_24h", "asnow", "asnow_6h", "asnow_24h"]:
+        filter_keys['stepType'] = 'accum'
+
+    kwargs = {'errors': 'ignore'}
+    if filter_keys:
+        kwargs['filter_by_keys'] = filter_keys
+
+    ds = xr.open_dataset(grib_path, engine="cfgrib", backend_kwargs=kwargs)
 
     if 'lon' in ds.coords:
         ds = ds.rename({'lon': 'longitude'})
@@ -373,8 +387,6 @@ def process_grib_to_array(grib_path, param_config, want_raster=True, target_date
     if ds.longitude.max() > 180:
         ds = ds.assign_coords(longitude=(((ds.longitude + 180) % 360) - 180)).sortby('longitude')
 
-    grib_var = param_config["grib_param"]
-    
     if "u" in ds and "v" in ds:
         raw_arr_k = np.hypot(np.squeeze(ds["u"].values), np.squeeze(ds["v"].values))
     else:
@@ -389,7 +401,6 @@ def process_grib_to_array(grib_path, param_config, want_raster=True, target_date
     if "anom" in param_config.get("id", "").lower() or param_config.get("is_anomaly"):
         target_unit = param_config.get("unit", "m").lower()
         scale_div = 98.0665 if target_unit in {"dam"} else 9.80665
-        # GFS HGT is already meters
         hgt = raw_arr_k if str(grib_var).lower() in {"gh", "hgt"} else raw_arr_k / scale_div
 
         clim = get_climatology_grid(param_config["id"], target_date, hgt.shape, unit=target_unit)
@@ -450,17 +461,14 @@ def fetch_and_process_step(target_date, chosen_run, step, param_config, model_na
     levelist = param_config.get("levelist")
 
     try:
-        # Initialize Herbie for this step
         H = Herbie(f"{target_date} {str(chosen_run).zfill(2)}:00", model="gfs", product="pgrb2.0p25", fxx=step)
         
-        # Determine what to download
         if isinstance(grib_p, list):
             search_strs = [_get_herbie_search(p, levtype, levelist) for p in grib_p]
         else:
             search_strs = [_get_herbie_search(grib_p, levtype, levelist)]
 
         with tm("download"):
-            # Herbie downloads subsets to its cache. We append them to our own grib_file.
             found_any = False
             with open(grib_file, 'wb') as f_out:
                 for s in search_strs:
@@ -523,7 +531,6 @@ def fetch_and_process_step(target_date, chosen_run, step, param_config, model_na
                     if frame_arr is not None:
                         ptype_arr = np.zeros_like(frame_arr, dtype=np.uint8)
                         
-                        # Priority: Snow (5) > Ice (3) > Rain (1)
                         if crain is not None: ptype_arr[crain == 1] = 1
                         if cfrzr is not None or cicep is not None:
                             ice_mask = np.zeros_like(ptype_arr, dtype=bool)
@@ -532,7 +539,6 @@ def fetch_and_process_step(target_date, chosen_run, step, param_config, model_na
                             ptype_arr[ice_mask] = 3
                         if csnow is not None: ptype_arr[csnow == 1] = 5
                         
-                        # Mask out ptype where there is no precipitation
                         ptype_arr[frame_arr == 0] = 0
 
                 except Exception as e:
