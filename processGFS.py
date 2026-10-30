@@ -460,10 +460,20 @@ def fetch_and_process_step(target_date, chosen_run, step, param_config, model_na
             search_strs = [_get_herbie_search(grib_p, levtype, levelist)]
 
         with tm("download"):
-            for s in search_strs:
-                H.download(s, outfile=grib_file, append=(s != search_strs[0]))
+            # Herbie downloads subsets to its cache. We append them to our own grib_file.
+            found_any = False
+            with open(grib_file, 'wb') as f_out:
+                for s in search_strs:
+                    downloaded_path = H.download(s)
+                    if downloaded_path and downloaded_path.exists():
+                        with open(downloaded_path, 'rb') as f_in:
+                            f_out.write(f_in.read())
+                        found_any = True
+            
+            if not found_any:
+                raise Exception("No GRIB data found by Herbie for this step.")
 
-        if os.path.exists(grib_file):
+        if os.path.exists(grib_file) and os.path.getsize(grib_file) > 0:
             contour_sources = param_config.get("contour_sources")
             if not contour_sources and param_config.get("contour_source"):
                 contour_sources = [param_config["contour_source"]]
@@ -487,11 +497,13 @@ def fetch_and_process_step(target_date, chosen_run, step, param_config, model_na
                     with tm("download_ptype"):
                         for p in ptype_gribs:
                             ptype_file = f"{model_name}_{param_config['id']}_ptype_{p}_{step:03d}.grib2"
-                            H.download(_get_herbie_search(p, "sfc"), outfile=ptype_file)
-                            ptype_files[p] = ptype_file
+                            p_path = H.download(_get_herbie_search(p, "sfc"))
+                            if p_path and p_path.exists():
+                                shutil.copyfile(p_path, ptype_file)
+                                ptype_files[p] = ptype_file
 
                     def read_ptype(fpath):
-                        if not os.path.exists(fpath): return None
+                        if not os.path.exists(fpath) or os.path.getsize(fpath) == 0: return None
                         ds = xr.open_dataset(fpath, engine="cfgrib", backend_kwargs={'errors': 'ignore'})
                         if 'lon' in ds.coords: ds = ds.rename({'lon': 'longitude'})
                         if 'lat' in ds.coords: ds = ds.rename({'lat': 'latitude'})
@@ -543,8 +555,10 @@ def fetch_and_process_step(target_date, chosen_run, step, param_config, model_na
                     c_search = _get_herbie_search(c_src["grib_param"], c_src.get("levtype", "sfc"), c_src.get("levelist"))
                     try:
                         with tm("download_contour"):
-                            H.download(c_search, outfile=c_grib_file)
-                        if os.path.exists(c_grib_file):
+                            c_path = H.download(c_search)
+                            if c_path and c_path.exists():
+                                shutil.copyfile(c_path, c_grib_file)
+                        if os.path.exists(c_grib_file) and os.path.getsize(c_grib_file) > 0:
                             if c_src.get("type") == "thickness":
                                 levels = process_thickness_grib(c_grib_file, c_src)
                             else:
