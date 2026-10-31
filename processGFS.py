@@ -26,8 +26,9 @@ os.environ["GDAL_NUM_THREADS"] = "ALL_CPUS"
 os.environ.setdefault("TQDM_DISABLE", "1")
 sys.stdout.reconfigure(line_buffering=True)
 
-# GFS 0.25 degree is 3-hourly out to 240 hours.
-FORECAST_STEPS = list(range(0, 241, 3))
+# GFS 0.25 degree is 3-hourly. 
+# 🌟 TESTING: Limited to 24 hours (0-24) to verify all parameters process.
+FORECAST_STEPS = list(range(0, 25, 3))
 
 MAX_TEXTURE_SIZE = 4096
 MAX_CONCURRENT_WORKERS = int(os.environ.get("MAX_WORKERS", "12"))
@@ -437,14 +438,15 @@ def _get_gfs_search(param, levtype, levelist=None):
     if levtype == "pl":
         name_map = {"t": "TMP", "u": "UGRD", "v": "VGRD", "gh": "HGT", "z": "HGT", "relv": "RELV"}
         name = name_map.get(p, p.upper())
-        return f":{name}:{levelist} mb:"
+        return f":{name}:{levelist} mb"
     else:
         name_map = {
             "2t": "TMP:2 m above ground",
+            "t2m": "TMP:2 m above ground",
             "tp": "APCP:surface",
             "weasd": "WEASD:surface",
             "prate": "PRATE:surface",
-            "pwat": "PWAT:entire atmosphere",
+            "pwat": "PWAT:entire atmosphere", 
             "cape": "CAPE:surface",
             "msl": "PRMSL:mean sea level",
             "crain": "CRAIN:surface",
@@ -453,43 +455,42 @@ def _get_gfs_search(param, levtype, levelist=None):
             "cicep": "CICEP:surface"
         }
         name = name_map.get(p, p.upper())
-        return f":{name}:"
+        return f":{name}"
 
-def download_gfs_variable(url_base, search_str, out_file, session):
+def download_gfs_variable(base_urls, search_str, out_file, session):
     """Downloads a specific byte range from an S3 object using the .idx file."""
-    idx_url = f"{url_base}.idx"
-    
-    # Get the .idx file
-    r_idx = session.get(idx_url, timeout=10)
-    if r_idx.status_code != 200:
-        return False
-    
-    lines = r_idx.text.strip().split('\n')
-    
-    start_byte = None
-    end_byte = None
-    
-    for i, line in enumerate(lines):
-        if search_str in line:
-            start_byte = int(line.split(':')[1])
-            # The end byte is the start byte of the next line, minus 1
-            if i + 1 < len(lines):
-                end_byte = int(lines[i+1].split(':')[1]) - 1
-            else:
-                end_byte = '' # Download to the end
-            break
-            
-    if start_byte is None:
-        return False # Variable not found in this GRIB file
-
-    # Download the specific byte range
-    headers = {'Range': f'bytes={start_byte}-{end_byte}'}
-    r_grib = session.get(url_base, headers=headers, timeout=20)
-    
-    if r_grib.status_code in (200, 206):
-        with open(out_file, 'ab') as f:
-            f.write(r_grib.content)
-        return True
+    for url_base in base_urls:
+        idx_url = f"{url_base}.idx"
+        try:
+            r_idx = session.get(idx_url, timeout=10)
+            if r_idx.status_code != 200:
+                continue
+        except requests.RequestException:
+            continue
+        
+        lines = r_idx.text.strip().split('\n')
+        start_byte = None
+        end_byte = None
+        
+        for i, line in enumerate(lines):
+            if search_str in line:
+                start_byte = int(line.split(':')[1])
+                if i + 1 < len(lines):
+                    end_byte = int(lines[i+1].split(':')[1]) - 1
+                else:
+                    end_byte = '' 
+                break
+                
+        if start_byte is not None:
+            headers = {'Range': f'bytes={start_byte}-{end_byte}'}
+            try:
+                r_grib = session.get(url_base, headers=headers, timeout=20)
+                if r_grib.status_code in (200, 206):
+                    with open(out_file, 'ab') as f:
+                        f.write(r_grib.content)
+                    return True
+            except requests.RequestException:
+                pass
     return False
 
 def fetch_and_process_step(target_date, chosen_run, step, param_config, model_name):
@@ -500,7 +501,9 @@ def fetch_and_process_step(target_date, chosen_run, step, param_config, model_na
     levtype = param_config.get("levtype", "sfc")
     levelist = param_config.get("levelist")
 
-    url_base = f"https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.{target_date}/{str(chosen_run).zfill(2)}/atmos/gfs.t{str(chosen_run).zfill(2)}z.pgrb2.0p25.f{step:03d}"
+    base_pgrb2 = f"https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.{target_date}/{str(chosen_run).zfill(2)}/atmos/gfs.t{str(chosen_run).zfill(2)}z.pgrb2.0p25.f{step:03d}"
+    base_pgrb2b = f"https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.{target_date}/{str(chosen_run).zfill(2)}/atmos/gfs.t{str(chosen_run).zfill(2)}z.pgrb2b.0p25.f{step:03d}"
+    base_urls = [base_pgrb2, base_pgrb2b]
 
     try:
         with requests.Session() as session:
@@ -509,14 +512,13 @@ def fetch_and_process_step(target_date, chosen_run, step, param_config, model_na
             else:
                 search_strs = [_get_gfs_search(grib_p, levtype, levelist)]
 
-            # Clear file if it exists from a previous partial run
             if os.path.exists(grib_file):
                 os.remove(grib_file)
 
             with tm("download"):
                 found_any = False
                 for s in search_strs:
-                    if download_gfs_variable(url_base, s, grib_file, session):
+                    if download_gfs_variable(base_urls, s, grib_file, session):
                         found_any = True
                 
                 if not found_any:
@@ -548,7 +550,7 @@ def fetch_and_process_step(target_date, chosen_run, step, param_config, model_na
                             ptype_file = f"{model_name}_{param_config['id']}_ptype_{p}_{step:03d}.grib2"
                             if os.path.exists(ptype_file):
                                 os.remove(ptype_file)
-                            if download_gfs_variable(url_base, _get_gfs_search(p, "sfc"), ptype_file, session):
+                            if download_gfs_variable(base_urls, _get_gfs_search(p, "sfc"), ptype_file, session):
                                 ptype_files[p] = ptype_file
 
                     def read_ptype(fpath):
@@ -608,7 +610,7 @@ def fetch_and_process_step(target_date, chosen_run, step, param_config, model_na
                         with tm("download_contour"), requests.Session() as session:
                             if os.path.exists(c_grib_file):
                                 os.remove(c_grib_file)
-                            if download_gfs_variable(url_base, c_search, c_grib_file, session):
+                            if download_gfs_variable(base_urls, c_search, c_grib_file, session):
                                 if c_src.get("type") == "thickness":
                                     levels = process_thickness_grib(c_grib_file, c_src)
                                 else:
