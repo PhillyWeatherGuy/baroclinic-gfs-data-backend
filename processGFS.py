@@ -26,14 +26,14 @@ os.environ["GDAL_NUM_THREADS"] = "ALL_CPUS"
 os.environ.setdefault("TQDM_DISABLE", "1")
 sys.stdout.reconfigure(line_buffering=True)
 
-# GFS 0.25 degree is 3-hourly out to 384 hours.
-FORECAST_STEPS = list(range(0, 385, 3))
+# GFS 0.25 degree: 3-hourly to 144h, then 6-hourly to 384h.
+FORECAST_STEPS = list(range(0, 145, 3)) + list(range(150, 385, 6))
 
 # =============================================================
 # ⚙️ MANUAL RUN CONFIGURATION (Leave as None for automatic latest)
 # =============================================================
-TARGET_DATE = "20261031"  # Format: "YYYYMMDD" or None (e.g. "20261030")
-TARGET_RUN  = "00"        # Format: "00", "06", "12", "18" (or "18z") or None
+TARGET_DATE = "None"  # Format: "YYYYMMDD" or None (e.g. "20261030")
+TARGET_RUN  = "None"        # Format: "00", "06", "12", "18" (or "18z") or None
 # =============================================================
 
 MAX_TEXTURE_SIZE = 4096
