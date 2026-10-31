@@ -26,9 +26,8 @@ os.environ["GDAL_NUM_THREADS"] = "ALL_CPUS"
 os.environ.setdefault("TQDM_DISABLE", "1")
 sys.stdout.reconfigure(line_buffering=True)
 
-# GFS 0.25 degree is 3-hourly. 
-# 🌟 TESTING: Limited to 24 hours (0-24) to verify all parameters process.
-FORECAST_STEPS = list(range(0, 25, 3))
+# GFS 0.25 degree is 3-hourly out to 384 hours.
+FORECAST_STEPS = list(range(0, 385, 3))
 
 MAX_TEXTURE_SIZE = 4096
 MAX_CONCURRENT_WORKERS = int(os.environ.get("MAX_WORKERS", "12"))
