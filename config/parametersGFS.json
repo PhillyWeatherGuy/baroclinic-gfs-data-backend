@@ -431,7 +431,7 @@
     "pva": {
       "id": "pva",
       "name": "500mb Height & Vort",
-      "grib_param": "relv",
+      "grib_param": "absv",
       "levtype": "pl",
       "levelist": 500,
       "type": "fc",
