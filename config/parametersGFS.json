@@ -443,7 +443,7 @@
         "byte_points": [0, 30, 107]
       },
       "contour_source": {
-        "grib_param": "z",
+        "grib_param": "gh",
         "levtype": "pl",
         "levelist": 500,
         "unit": "dam"
