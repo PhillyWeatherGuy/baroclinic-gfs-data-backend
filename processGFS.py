@@ -396,6 +396,13 @@ def process_grib_to_array(grib_path, param_config, want_raster=True, target_date
         target_var = grib_var if (isinstance(grib_var, str) and grib_var in ds) else list(ds.data_vars)[0]
         raw_arr_k = np.squeeze(ds[target_var].values)
 
+    # 🌪️ Derive Relative Vorticity: zeta = (eta - f) * sign(lat)
+    if (param_id == "pva" and str(target_var).lower() in ["absv", "relv"]) or grib_var in ["relv"]:
+        lats = ds['latitude'].values
+        omega = 7.292115e-5
+        f = 2.0 * omega * np.sin(np.deg2rad(lats))[:, np.newaxis]
+        raw_arr_k = (raw_arr_k - f) * np.sign(lats)[:, np.newaxis]
+
     ds.close()
 
     if param_config.get("category_mode"):
@@ -435,14 +442,15 @@ def process_grib_to_array(grib_path, param_config, want_raster=True, target_date
 def _get_gfs_search(param, levtype, levelist=None):
     p = param.lower()
     if levtype == "pl":
-        name_map = {"t": "TMP", "u": "UGRD", "v": "VGRD", "gh": "HGT", "z": "HGT", "relv": "RELV"}
+        name_map = {"t": "TMP", "u": "UGRD", "v": "VGRD", "gh": "HGT", "z": "HGT", "absv": "ABSV", "relv": "ABSV"}
         name = name_map.get(p, p.upper())
         return f":{name}:{levelist} mb"
     else:
+        if p in ["tp", "apcp"]:
+            return ":APCP:surface:0-"
         name_map = {
             "2t": "TMP:2 m above ground",
             "t2m": "TMP:2 m above ground",
-            "tp": "APCP:surface",
             "weasd": "WEASD:surface",
             "prate": "PRATE:surface",
             "pwat": "PWAT:entire atmosphere", 
@@ -500,6 +508,20 @@ def fetch_and_process_step(target_date, chosen_run, step, param_config, model_na
     levtype = param_config.get("levtype", "sfc")
     levelist = param_config.get("levelist")
 
+    is_accum = bool(
+        param_config.get("is_snow")
+        or param_config.get("interval_hours")
+        or param_config.get("id", "").lower() in ["tp", "asnow", "tp_6h", "tp_24h", "asnow_6h", "asnow_24h"]
+        or re.search(r'[-_]?(6|24)h(?:r)?$', param_config.get("id", "").lower())
+    )
+
+    if step == 0 and is_accum:
+        zero_arr = np.zeros((721, 1440), dtype=np.float32)
+        packed = pack_step([])
+        ptype_arr = np.zeros((721, 1440), dtype=np.uint8) if param_config.get("ptype_source") else None
+        print(f"  ⚡ [{param_config['id']}] Initialized F000 (0.0 accumulation)")
+        return step, zero_arr, packed, ptype_arr
+
     base_pgrb2 = f"https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.{target_date}/{str(chosen_run).zfill(2)}/atmos/gfs.t{str(chosen_run).zfill(2)}z.pgrb2.0p25.f{step:03d}"
     base_pgrb2b = f"https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.{target_date}/{str(chosen_run).zfill(2)}/atmos/gfs.t{str(chosen_run).zfill(2)}z.pgrb2b.0p25.f{step:03d}"
     base_urls = [base_pgrb2, base_pgrb2b]
@@ -530,9 +552,9 @@ def fetch_and_process_step(target_date, chosen_run, step, param_config, model_na
 
             has_contours = bool(contour_sources)
             raster_config = {**param_config, "contours": []} if has_contours else param_config
-            is_interval = bool(param_config.get("interval_hours") or re.search(r'[-_]?(6|24)h(?:r)?$', param_config.get("id", "").lower()))
+            want_raw = is_accum
             
-            frame_arr, contour_levels = process_grib_to_array(grib_file, raster_config, target_date=target_date, want_raw=is_interval)
+            frame_arr, contour_levels = process_grib_to_array(grib_file, raster_config, target_date=target_date, want_raw=want_raw)
             contour_levels = list(contour_levels)
             ptype_arr = None
 
@@ -575,17 +597,17 @@ def fetch_and_process_step(target_date, chosen_run, step, param_config, model_na
                     cicep = read_ptype(ptype_files.get('cicep'))
 
                     if frame_arr is not None:
-                        ptype_arr = np.zeros_like(frame_arr, dtype=np.uint8)
+                        ptype_arr = np.zeros(frame_arr.shape, dtype=np.uint8)
                         
                         if crain is not None: ptype_arr[crain == 1] = 1
                         if cfrzr is not None or cicep is not None:
-                            ice_mask = np.zeros_like(ptype_arr, dtype=bool)
+                            ice_mask = np.zeros(frame_arr.shape, dtype=bool)
                             if cfrzr is not None: ice_mask |= (cfrzr == 1)
                             if cicep is not None: ice_mask |= (cicep == 1)
                             ptype_arr[ice_mask] = 3
                         if csnow is not None: ptype_arr[csnow == 1] = 5
                         
-                        ptype_arr[frame_arr == 0] = 0
+                        ptype_arr[frame_arr <= 0] = 0
 
                 except Exception as e:
                     print(f"  ⚠️ [{param_config['id']}] Precip type derivation failed F{step:03d}: {e}")
@@ -867,6 +889,38 @@ def run_master_pipeline(selected_param_key="2t", custom_run=None, custom_date=No
 
     sorted_steps = sorted(results.keys())
 
+    is_accum = bool(
+        param_config.get("is_snow")
+        or param_config.get("interval_hours")
+        or param_config.get("id", "").lower() in ["tp", "asnow", "tp_6h", "tp_24h", "asnow_6h", "asnow_24h"]
+        or re.search(r'[-_]?(6|24)h(?:r)?$', param_config.get("id", "").lower())
+    )
+
+    # ❄️ Snow Accumulation Logic (10:1 ratio with CSNOW)
+    if param_config.get("is_snow") and sorted_steps:
+        accum_snow = np.zeros_like(results[sorted_steps[0]], dtype=np.float32)
+        snow_results = {}
+        prev_p = np.zeros_like(results[sorted_steps[0]], dtype=np.float32)
+
+        for s in sorted_steps:
+            if s == 0:
+                snow_results[0] = np.zeros_like(accum_snow)
+                continue
+
+            curr_p = results[s]
+            delta_p = np.maximum(0.0, curr_p - prev_p)
+            prev_p = curr_p
+
+            if s in ptype_results and ptype_results[s] is not None:
+                snow_mask = (ptype_results[s] == 5)
+                accum_snow = accum_snow + (delta_p * snow_mask)
+            else:
+                accum_snow = accum_snow + delta_p
+
+            snow_results[s] = accum_snow.copy()
+
+        results = snow_results
+
     interval_h = param_config.get("interval_hours")
     if not interval_h:
         match = re.search(r'[-_]?(6|24)h(?:r)?$', param_config.get("id", "").lower())
@@ -878,15 +932,17 @@ def run_master_pipeline(selected_param_key="2t", custom_run=None, custom_date=No
         for s in sorted_steps:
             target_prev = s - interval_h
             if target_prev <= 0:
-                prev_arr = results.get(0, 0.0)
+                prev_arr = results.get(0, np.zeros_like(results[s]))
             else:
                 candidates = [st for st in sorted_steps if st <= target_prev]
                 prev_s = max(candidates) if candidates else None
-                prev_arr = results[prev_s] if prev_s is not None else 0.0
+                prev_arr = results[prev_s] if prev_s is not None else np.zeros_like(results[s])
 
             diff = np.maximum(0.0, results[s] - prev_arr)
             diff_results[s] = normalize_array(diff, param_config)
         results = diff_results
+    elif is_accum:
+        results = {s: normalize_array(results[s], param_config) for s in sorted_steps}
 
     frame_arrays = [results[s] for s in sorted_steps]
     ptype_arrays = [ptype_results.get(s) for s in sorted_steps]
@@ -939,7 +995,7 @@ def run_master_pipeline(selected_param_key="2t", custom_run=None, custom_date=No
     t0 = time.perf_counter()
     chunks, frame_w, frame_h = build_volume_chunks(
         frame_arrays, steps_written, model_name=MODEL_NAME, param_config=param_config,
-        target_date=target_date, chosen_run=CHOSEN_RUN, ptype_arrays=ptype_arrays if ptype_results else None
+        target_date=target_date, chosen_run=CHOSEN_RUN, ptype_arrays=ptype_arrays if (ptype_results and param_config.get("id") == "prate") else None
     )
 
     manifest_chunks = []
