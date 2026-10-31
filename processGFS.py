@@ -575,7 +575,7 @@ def fetch_and_process_step(target_date, chosen_run, step, param_config, model_na
                                 ptype_files[p] = ptype_file
 
                     def read_ptype(fpath):
-                        if not os.path.exists(fpath) or os.path.getsize(fpath) == 0: return None
+                        if not fpath or not os.path.exists(fpath) or os.path.getsize(fpath) == 0: return None
                         try:
                             ds = xr.open_dataset(fpath, engine="cfgrib", backend_kwargs={'errors': 'ignore'})
                             if not ds.data_vars: return None
