@@ -29,6 +29,13 @@ sys.stdout.reconfigure(line_buffering=True)
 # GFS 0.25 degree is 3-hourly out to 384 hours.
 FORECAST_STEPS = list(range(0, 385, 3))
 
+# =============================================================
+# ⚙️ MANUAL RUN CONFIGURATION (Leave as None for automatic latest)
+# =============================================================
+TARGET_DATE = "20261031"  # Format: "YYYYMMDD" or None (e.g. "20261030")
+TARGET_RUN  = "00"        # Format: "00", "06", "12", "18" (or "18z") or None
+# =============================================================
+
 MAX_TEXTURE_SIZE = 4096
 MAX_CONCURRENT_WORKERS = int(os.environ.get("MAX_WORKERS", "12"))
 GZIP_LEVEL = 6
@@ -843,8 +850,19 @@ def run_master_pipeline(selected_param_key="2t", custom_run=None, custom_date=No
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     current_hour = now_utc.hour
 
-    if custom_run and custom_date:
-        CHOSEN_RUN, target_date = str(custom_run).zfill(2), str(custom_date)
+    # 🌟 Priority: CLI argument -> TARGET_RUN/TARGET_DATE at top of file -> Auto latest
+    chosen_r = custom_run if custom_run is not None else TARGET_RUN
+    chosen_d = custom_date if custom_date is not None else TARGET_DATE
+
+    if chosen_r is not None:
+        CHOSEN_RUN = str(chosen_r).lower().replace("z", "").zfill(2)
+        if chosen_d is not None:
+            target_date = str(chosen_d)
+        else:
+            if int(CHOSEN_RUN) > current_hour:
+                target_date = (now_utc - datetime.timedelta(days=1)).strftime("%Y%m%d")
+            else:
+                target_date = now_utc.strftime("%Y%m%d")
     elif current_hour >= 18:
         CHOSEN_RUN, target_date = "12", now_utc.strftime("%Y%m%d")
     elif current_hour >= 12:
@@ -1069,21 +1087,35 @@ def run_master_pipeline(selected_param_key="2t", custom_run=None, custom_date=No
 
 if __name__ == "__main__":
     target_params = []
-    custom_run = None
-    custom_date = None
+    custom_run = os.environ.get("MODEL_RUN") or os.environ.get("RUN")
+    custom_date = os.environ.get("MODEL_DATE") or os.environ.get("DATE")
 
     args = sys.argv[1:]
     i = 0
     while i < len(args):
-        if args[i] == "--run" and i + 1 < len(args):
+        arg = args[i]
+        if arg in ("--run", "-r") and i + 1 < len(args):
             custom_run = args[i + 1]
             i += 2
-        elif args[i] == "--date" and i + 1 < len(args):
+        elif arg.startswith("--run="):
+            custom_run = arg.split("=", 1)[1]
+            i += 1
+        elif arg in ("--date", "-d") and i + 1 < len(args):
             custom_date = args[i + 1]
             i += 2
-        else:
-            target_params.append(args[i])
+        elif arg.startswith("--date="):
+            custom_date = arg.split("=", 1)[1]
             i += 1
+        elif re.match(r'^(00|06|12|18)z?$', arg.lower()):
+            custom_run = arg
+            i += 1
+        else:
+            target_params.append(arg)
+            i += 1
+
+    # Apply defaults from top of file if not passed via command line
+    final_run = custom_run if custom_run is not None else TARGET_RUN
+    final_date = custom_date if custom_date is not None else TARGET_DATE
 
     if not target_params:
         if os.path.exists(CONFIG_FILE_PATH):
@@ -1107,7 +1139,7 @@ if __name__ == "__main__":
         print(f"\n📦 [Batch {batch_num}/{total_batches}] Running {len(batch)} parameter(s) concurrently: {batch}")
 
         with concurrent.futures.ProcessPoolExecutor(max_workers=len(batch)) as executor:
-            futures = {executor.submit(run_master_pipeline, param, custom_run, custom_date): param for param in batch}
+            futures = {executor.submit(run_master_pipeline, param, final_run, final_date): param for param in batch}
             for future in concurrent.futures.as_completed(futures):
                 param = futures[future]
                 try:
