@@ -3,14 +3,20 @@
     "asnow_6h": {
       "id": "asnow_6h",
       "name": "6-Hour Accumulated Snowfall",
-      "grib_param": "weasd",
+      "grib_param": "tp",
+      "is_snow": true,
       "interval_hours": 6,
       "levtype": "sfc",
       "type": "fc",
       "unit": "in",
+      "ptype_source": {
+        "grib_params": ["csnow"],
+        "levtype": "sfc",
+        "type": "fc"
+      },
       "scaling": {
         "mode": "piecewise",
-        "unit_multiplier": 0.0393701,
+        "unit_multiplier": 0.393701,
         "val_points": [0.0, 1.0, 10.0, 36.0, 150.0],
         "byte_points": [0, 100, 200, 226, 255]
       },
@@ -49,14 +55,20 @@
     "asnow_24h": {
       "id": "asnow_24h",
       "name": "24-Hour Accumulated Snowfall",
-      "grib_param": "weasd",
+      "grib_param": "tp",
+      "is_snow": true,
       "interval_hours": 24,
       "levtype": "sfc",
       "type": "fc",
       "unit": "in",
+      "ptype_source": {
+        "grib_params": ["csnow"],
+        "levtype": "sfc",
+        "type": "fc"
+      },
       "scaling": {
         "mode": "piecewise",
-        "unit_multiplier": 0.0393701,
+        "unit_multiplier": 0.393701,
         "val_points": [0.0, 1.0, 10.0, 36.0, 150.0],
         "byte_points": [0, 100, 200, 226, 255]
       },
@@ -175,13 +187,19 @@
     "asnow": {
       "id": "asnow",
       "name": "Total Accumulated Snowfall",
-      "grib_param": "weasd",
+      "grib_param": "tp",
+      "is_snow": true,
       "levtype": "sfc",
       "type": "fc",
       "unit": "in",
+      "ptype_source": {
+        "grib_params": ["csnow"],
+        "levtype": "sfc",
+        "type": "fc"
+      },
       "scaling": {
         "mode": "piecewise",
-        "unit_multiplier": 0.0393701,
+        "unit_multiplier": 0.393701,
         "val_points": [0.0, 1.0, 10.0, 36.0, 150.0],
         "byte_points": [0, 100, 200, 226, 255]
       },
