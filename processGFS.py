@@ -26,7 +26,7 @@ os.environ["GDAL_NUM_THREADS"] = "ALL_CPUS"
 os.environ.setdefault("TQDM_DISABLE", "1")
 sys.stdout.reconfigure(line_buffering=True)
 
-# GFS 0.25 degree: 3-hourly to 144h, then 6-hourly to 384h.
+# GFS 0.25 degree: 3-hourly to 144h, then 6-hourly to 384h. 
 FORECAST_STEPS = list(range(0, 145, 3)) + list(range(150, 385, 6))
 
 # =============================================================
