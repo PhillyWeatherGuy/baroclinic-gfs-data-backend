@@ -453,12 +453,16 @@ def _get_gfs_search(param, levtype, levelist=None):
         name = name_map.get(p, p.upper())
         return f":{name}:{levelist} mb"
     else:
+        # 🌟 Pull WEASD for GFS snowfall (matches Tropical Tidbits & PolarWx 10:1 ratio)
+        if p in ["asnow", "weasd"]:
+            return ":WEASD:surface:"
         if p in ["tp", "apcp"]:
             return ":APCP:surface:0-"
         name_map = {
             "2t": "TMP:2 m above ground",
             "t2m": "TMP:2 m above ground",
             "weasd": "WEASD:surface",
+            "asnow": "WEASD:surface",
             "prate": "PRATE:surface",
             "pwat": "PWAT:entire atmosphere", 
             "cape": "CAPE:surface",
@@ -522,7 +526,8 @@ def fetch_and_process_step(target_date, chosen_run, step, param_config, model_na
         or re.search(r'[-_]?(6|24)h(?:r)?$', param_config.get("id", "").lower())
     )
 
-    if step == 0 and is_accum:
+    # 🌟 For snow, let step 0 fetch the F000 baseline so existing snowpack isn't treated as new snow
+    if step == 0 and is_accum and not param_config.get("is_snow"):
         zero_arr = np.zeros((721, 1440), dtype=np.float32)
         packed = pack_step([])
         ptype_arr = np.zeros((721, 1440), dtype=np.uint8) if param_config.get("ptype_source") else None
@@ -914,27 +919,21 @@ def run_master_pipeline(selected_param_key="2t", custom_run=None, custom_date=No
         or re.search(r'[-_]?(6|24)h(?:r)?$', param_config.get("id", "").lower())
     )
 
-    # ❄️ Snow Accumulation Logic (10:1 ratio with CSNOW)
+    # ❄️ Snow Accumulation Logic (WEASD cumulative positive increases: matches Tropical Tidbits & PolarWx)
     if param_config.get("is_snow") and sorted_steps:
         accum_snow = np.zeros_like(results[sorted_steps[0]], dtype=np.float32)
-        snow_results = {}
-        prev_p = np.zeros_like(results[sorted_steps[0]], dtype=np.float32)
+        snow_results = {0: np.zeros_like(accum_snow)}
+        
+        # Initialize with baseline F000 snow on the ground
+        prev_p = results[sorted_steps[0]].copy()
 
-        for s in sorted_steps:
-            if s == 0:
-                snow_results[0] = np.zeros_like(accum_snow)
-                continue
-
+        for s in sorted_steps[1:]:
             curr_p = results[s]
+            # Accumulate only new frozen precipitation increases (discards rain and melting)
             delta_p = np.maximum(0.0, curr_p - prev_p)
             prev_p = curr_p
 
-            if s in ptype_results and ptype_results[s] is not None:
-                snow_mask = (ptype_results[s] == 5)
-                accum_snow = accum_snow + (delta_p * snow_mask)
-            else:
-                accum_snow = accum_snow + delta_p
-
+            accum_snow = accum_snow + delta_p
             snow_results[s] = accum_snow.copy()
 
         results = snow_results
