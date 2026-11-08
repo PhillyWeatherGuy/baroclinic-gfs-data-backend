@@ -3,17 +3,12 @@
     "asnow_6h": {
       "id": "asnow_6h",
       "name": "6-Hour Accumulated Snowfall",
-      "grib_param": "tp",
+      "grib_param": "weasd",
       "is_snow": true,
       "interval_hours": 6,
       "levtype": "sfc",
       "type": "fc",
       "unit": "in",
-      "ptype_source": {
-        "grib_params": ["csnow"],
-        "levtype": "sfc",
-        "type": "fc"
-      },
       "scaling": {
         "mode": "piecewise",
         "unit_multiplier": 0.393701,
@@ -30,17 +25,20 @@
         "latest_manifest": "{model}_{param}_manifest.json"
       }
     },
-    "cape": {
-      "id": "cape",
-      "name": "Surface-Based CAPE",
-      "grib_param": "cape",
+    "asnow_24h": {
+      "id": "asnow_24h",
+      "name": "24-Hour Accumulated Snowfall",
+      "grib_param": "weasd",
+      "is_snow": true,
+      "interval_hours": 24,
       "levtype": "sfc",
       "type": "fc",
-      "unit": "J/Kg",
+      "unit": "in",
       "scaling": {
-        "mode": "linear",
-        "min_val": 0.0,
-        "max_val": 10000.0
+        "mode": "piecewise",
+        "unit_multiplier": 0.393701,
+        "val_points": [0.0, 1.0, 10.0, 36.0, 150.0],
+        "byte_points": [0, 100, 200, 226, 255]
       },
       "contours": [],
       "filename_patterns": {
@@ -52,20 +50,14 @@
         "latest_manifest": "{model}_{param}_manifest.json"
       }
     },
-    "asnow_24h": {
-      "id": "asnow_24h",
-      "name": "24-Hour Accumulated Snowfall",
-      "grib_param": "tp",
+    "asnow": {
+      "id": "asnow",
+      "name": "Total Accumulated Snowfall",
+      "grib_param": "weasd",
       "is_snow": true,
-      "interval_hours": 24,
       "levtype": "sfc",
       "type": "fc",
       "unit": "in",
-      "ptype_source": {
-        "grib_params": ["csnow"],
-        "levtype": "sfc",
-        "type": "fc"
-      },
       "scaling": {
         "mode": "piecewise",
         "unit_multiplier": 0.393701,
@@ -130,6 +122,29 @@
         "latest_manifest": "{model}_{param}_manifest.json"
       }
     },
+    "tp": {
+      "id": "tp",
+      "name": "Total Accumulated Precipitation",
+      "grib_param": "tp",
+      "levtype": "sfc",
+      "type": "fc",
+      "unit": "in",
+      "scaling": {
+        "mode": "piecewise",
+        "unit_multiplier": 0.0393701,
+        "val_points": [0.0, 1.0, 10.0, 50.0],
+        "byte_points": [0, 100, 200, 255]
+      },
+      "contours": [],
+      "filename_patterns": {
+        "grib": "{model}_{param}_{step:03d}.grib2",
+        "volume": "{model}_{param}_{date}_{run}z_volume_{chunk_idx}.bin",
+        "run_contours": "{model}_{param}_{date}_{run}z_contours.json",
+        "latest_contours": "{model}_{param}_contours.json",
+        "run_manifest": "{model}_{param}_{date}_{run}z_manifest.json",
+        "latest_manifest": "{model}_{param}_manifest.json"
+      }
+    },
     "2t": {
       "id": "2t",
       "name": "2m Temperature",
@@ -157,51 +172,21 @@
         "volume": "{model}_{param}_{date}_{run}z_volume_{chunk_idx}.bin",
         "run_contours": "{model}_{param}_{date}_{run}z_contours.json",
         "latest_contours": "{model}_{param}_contours.json",
-        "run_manifest": "{model}_{date}_{run}z_manifest.json",
-        "latest_manifest": "{model}_{param}_manifest.json"
-      }
-    },
-    "tp": {
-      "id": "tp",
-      "name": "Total Accumulated Precipitation",
-      "grib_param": "tp",
-      "levtype": "sfc",
-      "type": "fc",
-      "unit": "in",
-      "scaling": {
-        "mode": "piecewise",
-        "unit_multiplier": 0.0393701,
-        "val_points": [0.0, 1.0, 10.0, 50.0],
-        "byte_points": [0, 100, 200, 255]
-      },
-      "contours": [],
-      "filename_patterns": {
-        "grib": "{model}_{param}_{step:03d}.grib2",
-        "volume": "{model}_{param}_{date}_{run}z_volume_{chunk_idx}.bin",
-        "run_contours": "{model}_{param}_{date}_{run}z_contours.json",
-        "latest_contours": "{model}_{param}_contours.json",
         "run_manifest": "{model}_{param}_{date}_{run}z_manifest.json",
         "latest_manifest": "{model}_{param}_manifest.json"
       }
     },
-    "asnow": {
-      "id": "asnow",
-      "name": "Total Accumulated Snowfall",
-      "grib_param": "tp",
-      "is_snow": true,
+    "cape": {
+      "id": "cape",
+      "name": "Surface-Based CAPE",
+      "grib_param": "cape",
       "levtype": "sfc",
       "type": "fc",
-      "unit": "in",
-      "ptype_source": {
-        "grib_params": ["csnow"],
-        "levtype": "sfc",
-        "type": "fc"
-      },
+      "unit": "J/Kg",
       "scaling": {
-        "mode": "piecewise",
-        "unit_multiplier": 0.393701,
-        "val_points": [0.0, 1.0, 10.0, 36.0, 150.0],
-        "byte_points": [0, 100, 200, 226, 255]
+        "mode": "linear",
+        "min_val": 0.0,
+        "max_val": 10000.0
       },
       "contours": [],
       "filename_patterns": {
