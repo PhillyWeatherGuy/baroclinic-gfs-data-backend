@@ -32,7 +32,7 @@ FORECAST_STEPS = list(range(0, 145, 3)) + list(range(150, 385, 6))
 # =============================================================
 # ⚙️ MANUAL RUN CONFIGURATION (Leave as None for automatic latest)
 # =============================================================
-TARGET_DATE = "20261120"  # Format: "YYYYMMDD" or None (e.g. "20261030")
+TARGET_DATE = "20261122"  # Format: "YYYYMMDD" or None (e.g. "20261030")
 TARGET_RUN  = "06"        # Format: "00", "06", "12", "18" (or "18z") or None
 # =============================================================
 
